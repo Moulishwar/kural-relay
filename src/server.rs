@@ -482,7 +482,11 @@ pub async fn run_server(
         whitelist.clone(),
     );
     groups_processor = groups_processor
-        .with_report_evidence(Arc::clone(&report_evidence), config_dir.to_path_buf());
+        .with_report_evidence(Arc::clone(&report_evidence), config_dir.to_path_buf())
+        .with_public_read(settings.public_read);
+    if settings.public_read {
+        info!("Public read enabled: anyone may read; only admitted pubkeys may publish");
+    }
     if let Some(index) = &obelisk_index {
         groups_processor = groups_processor.with_obelisk_index(index.clone());
     }
@@ -542,6 +546,9 @@ pub async fn run_server(
     let relay_description = settings.relay_description.clone().unwrap_or_else(|| {
         if whitelist.is_empty() {
             "NIP-29 groups relay for Obelisk. Public access.".to_string()
+        } else if settings.public_read {
+            "NIP-29 groups relay for Obelisk. Public read; whitelisted pubkeys may publish."
+                .to_string()
         } else {
             "NIP-29 groups relay for Obelisk. Auth-required, whitelisted access.".to_string()
         }
@@ -619,7 +626,8 @@ pub async fn run_server(
         whitelist.clone(),
         relay_keys.public_key,
         admin_pubkeys.clone(),
-    );
+    )
+    .with_public_read(settings.public_read);
     // NIP-77 reconciliation reads straight from the database, past every
     // visibility rule; see `crate::negentropy_gate`.
     let negentropy_gate = NegentropyGate::new(relay_keys.public_key, admin_pubkeys.clone());

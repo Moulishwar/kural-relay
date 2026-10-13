@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 
 struct Fixture {
     _tmp: TempDir,
+    groups: Arc<Groups>,
     processor: GroupsRelayProcessor,
     relay: Keys,
     /// On the guest list.
@@ -29,7 +30,17 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// The relay as upstream ships it: the whitelist gates reads and writes.
     async fn new() -> Self {
+        Self::build(false).await
+    }
+
+    /// Kural's configuration: `public_read: true`.
+    async fn public_read() -> Self {
+        Self::build(true).await
+    }
+
+    async fn build(public_read: bool) -> Self {
         let tmp = TempDir::new().unwrap();
         let database = Arc::new(
             RelayDatabase::new(tmp.path().join("test.db").to_str().unwrap())
@@ -53,9 +64,11 @@ impl Fixture {
             None,
             Blacklist::new(None),
         );
-        let processor = GroupsRelayProcessor::new(groups, relay.public_key(), whitelist);
+        let processor = GroupsRelayProcessor::new(groups.clone(), relay.public_key(), whitelist)
+            .with_public_read(public_read);
         Self {
             _tmp: tmp,
+            groups,
             processor,
             relay,
             ravi,
@@ -82,6 +95,31 @@ impl Fixture {
             .can_see_event(event, state(), &self.as_user(who))
             .unwrap_or(false)
     }
+
+    async fn publish(&self, who: Option<&Keys>, event: Event) -> relay_builder::Result<()> {
+        self.processor
+            .handle_event(event, state(), &self.as_user(who))
+            .await
+            .map(|_| ())
+    }
+
+    /// A managed NIP-29 group created by Ravi. `flags` are the 9007 tags,
+    /// e.g. `["public", "open"]` or `["private"]`.
+    async fn create_group(&self, id: &str, flags: &[&str]) {
+        let mut builder =
+            EventBuilder::new(Kind::Custom(9007), "").tag(Tag::custom(TagKind::h(), [id]));
+        for flag in flags {
+            builder = builder.tag(Tag::custom(
+                TagKind::Custom((*flag).into()),
+                Vec::<String>::new(),
+            ));
+        }
+        let event = builder.sign_with_keys(&self.ravi).unwrap();
+        self.groups
+            .handle_group_create(Box::new(event), &Scope::Default)
+            .await
+            .unwrap();
+    }
 }
 
 fn state() -> Arc<RwLock<()>> {
@@ -90,6 +128,28 @@ fn state() -> Arc<RwLock<()>> {
 
 fn is_auth_required(r: &relay_builder::Result<()>) -> bool {
     matches!(r, Err(relay_builder::Error::AuthRequired { .. }))
+}
+
+fn is_restricted(r: &relay_builder::Result<()>) -> bool {
+    matches!(r, Err(relay_builder::Error::Restricted { .. }))
+}
+
+fn note(author: &Keys) -> Event {
+    EventBuilder::text_note("hello")
+        .sign_with_keys(author)
+        .unwrap()
+}
+
+fn in_group(author: &Keys, kind: u16, group: &str) -> Event {
+    EventBuilder::new(Kind::Custom(kind), "post")
+        .tag(Tag::custom(TagKind::h(), [group]))
+        .sign_with_keys(author)
+        .unwrap()
+}
+
+/// Marmot group traffic: kind 445, a fresh signing key, an unmanaged `h`.
+fn marmot_445(group: &str) -> Event {
+    in_group(&Keys::generate(), 445, group)
 }
 
 /// A gift wrap as Marmot / NIP-59 publish it: signed by a throwaway key,
@@ -203,4 +263,128 @@ async fn r2_relay_admins_still_see_reports() {
     let f = Fixture::new().await;
     let report = report_against(&f.ravi, &f.meera);
     assert!(f.sees(Some(&f.relay), &report));
+}
+
+// ---------------------------------------------------------------- patch (b): public_read
+
+#[tokio::test]
+async fn b1_anyone_can_read_public_notes() {
+    let f = Fixture::public_read().await;
+    assert!(f
+        .verify(None, vec![Filter::new().kind(Kind::TextNote)])
+        .is_ok());
+    assert!(f.sees(None, &note(&f.ravi)));
+}
+
+#[tokio::test]
+async fn b2_anyone_can_read_a_public_group() {
+    let f = Fixture::public_read().await;
+    f.create_group("town-square", &["public", "open"]).await;
+    let filter = Filter::new().custom_tag(SingleLetterTag::lowercase(Alphabet::H), "town-square");
+    assert!(f.verify(None, vec![filter]).is_ok());
+    assert!(f.sees(None, &in_group(&f.ravi, 11, "town-square")));
+}
+
+#[tokio::test]
+async fn b3_a_private_group_stays_members_only() {
+    let f = Fixture::public_read().await;
+    f.create_group("family", &["private"]).await;
+    let filter = Filter::new().custom_tag(SingleLetterTag::lowercase(Alphabet::H), "family");
+    assert!(is_auth_required(&f.verify(None, vec![filter.clone()])));
+    assert!(is_restricted(&f.verify(Some(&f.outsider), vec![filter])));
+    let post = in_group(&f.ravi, 11, "family");
+    assert!(!f.sees(None, &post));
+    assert!(
+        !f.sees(Some(&f.meera), &post),
+        "a guest who is not a member"
+    );
+}
+
+#[tokio::test]
+async fn b4_anonymous_request_for_private_traffic_is_told_to_authenticate() {
+    let f = Fixture::public_read().await;
+    let filter = Filter::new()
+        .kind(Kind::Custom(445))
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), "abc");
+    assert!(is_auth_required(&f.verify(None, vec![filter])));
+}
+
+#[tokio::test]
+async fn b5_a_logged_in_non_guest_is_refused_private_traffic() {
+    let f = Fixture::public_read().await;
+    let filter = Filter::new().kind(Kind::Custom(445));
+    assert!(is_restricted(&f.verify(Some(&f.outsider), vec![filter])));
+    assert!(!f.sees(Some(&f.outsider), &marmot_445("abc")));
+}
+
+#[tokio::test]
+async fn b6_a_guest_reads_private_traffic() {
+    let f = Fixture::public_read().await;
+    let filter = Filter::new().kind(Kind::Custom(445));
+    assert!(f.verify(Some(&f.meera), vec![filter]).is_ok());
+    assert!(f.sees(Some(&f.meera), &marmot_445("abc")));
+}
+
+#[tokio::test]
+async fn b7_an_empty_filter_returns_public_events_only() {
+    let f = Fixture::public_read().await;
+    assert!(f.verify(None, vec![Filter::new()]).is_ok());
+    assert!(f.sees(None, &note(&f.ravi)));
+    assert!(!f.sees(None, &marmot_445("abc")));
+    assert!(!f.sees(None, &gift_wrap_to(&f.ravi)));
+    assert!(!f.sees(None, &report_against(&f.ravi, &f.meera)));
+    // The same for a logged-in non-guest, and for a `#h` filter that never names 445.
+    let by_group = Filter::new().custom_tag(SingleLetterTag::lowercase(Alphabet::H), "abc");
+    assert!(f.verify(Some(&f.outsider), vec![by_group]).is_ok());
+    assert!(!f.sees(Some(&f.outsider), &marmot_445("abc")));
+}
+
+#[tokio::test]
+async fn b8_anonymous_writes_are_still_told_to_authenticate() {
+    let f = Fixture::public_read().await;
+    let r = f.publish(None, note(&f.ravi)).await;
+    assert!(is_auth_required(&r), "got {r:?}");
+}
+
+#[tokio::test]
+async fn b9_a_logged_in_non_guest_still_cannot_write() {
+    let f = Fixture::public_read().await;
+    let r = f.publish(Some(&f.outsider), note(&f.outsider)).await;
+    assert!(is_restricted(&r), "got {r:?}");
+    // Guests can.
+    assert!(f.publish(Some(&f.ravi), note(&f.ravi)).await.is_ok());
+}
+
+#[tokio::test]
+async fn b10_reports_stay_admin_only() {
+    let f = Fixture::public_read().await;
+    let filter = Filter::new().kind(Kind::Reporting);
+    assert!(f.verify(Some(&f.ravi), vec![filter.clone()]).is_err());
+    assert!(f.verify(None, vec![filter.clone()]).is_err());
+    assert!(f.verify(Some(&f.relay), vec![filter]).is_ok());
+}
+
+#[tokio::test]
+async fn b11_without_public_read_the_whitelist_still_gates_reads() {
+    let f = Fixture::new().await;
+    f.create_group("town-square", &["public", "open"]).await;
+    assert!(is_auth_required(
+        &f.verify(None, vec![Filter::new().kind(Kind::TextNote)])
+    ));
+    let by_group = Filter::new().custom_tag(SingleLetterTag::lowercase(Alphabet::H), "town-square");
+    assert!(is_auth_required(&f.verify(None, vec![by_group])));
+    assert!(is_auth_required(
+        &f.verify(Some(&f.outsider), vec![Filter::new()])
+    ));
+    assert!(f.verify(Some(&f.ravi), vec![Filter::new()]).is_ok());
+}
+
+#[tokio::test]
+async fn b12_a_non_guest_recipient_does_not_get_gift_wraps_on_a_public_read_relay() {
+    let f = Fixture::public_read().await;
+    // Only guests take part in private spaces; a wrap addressed to an
+    // outsider stays on the relay but is not served to them.
+    let wrap = gift_wrap_to(&f.outsider);
+    assert!(!f.sees(Some(&f.outsider), &wrap));
+    assert!(f.sees(Some(&f.ravi), &gift_wrap_to(&f.ravi)));
 }

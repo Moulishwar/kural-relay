@@ -121,6 +121,13 @@ pub struct RelaySettings {
     /// keeps full NIP-29 semantics.
     #[serde(default)]
     pub force_public_groups: bool,
+    /// When `true`, readers do not need to be admitted: anyone may read, while
+    /// publishing still requires the whitelist / access tiers. Readers who are
+    /// not admitted still never receive private-group traffic (kind 445),
+    /// gift wraps (1059) or moderation reports (1984). Defaults to `false`, so
+    /// a whitelisted relay keeps refusing non-admitted readers exactly as before.
+    #[serde(default)]
+    pub public_read: bool,
     /// NIP-50 search filters. When false, incoming REQ/COUNT filters that
     /// include `search` are rejected before they reach storage.
     #[serde(default = "default_enable_indexed_search")]
@@ -575,6 +582,7 @@ pub struct Settings {
     pub connection_rate_limit_per_minute: Option<u32>,
     pub global_rate_limit_per_minute: Option<u32>,
     pub force_public_groups: bool,
+    pub public_read: bool,
     pub enable_indexed_search: bool,
     pub advertise_indexed_search: Option<bool>,
     pub obelisk_index: ObeliskIndexSettings,

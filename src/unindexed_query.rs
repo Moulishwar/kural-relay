@@ -136,6 +136,9 @@ pub struct UnindexedQueryMiddleware {
     whitelist: Whitelist,
     relay_pubkey: PublicKey,
     admin_pubkeys: Arc<Vec<PublicKey>>,
+    /// Mirrors the processor's `public_read`: readers are not refused for
+    /// lacking admission, so their scans must be charged too.
+    public_read: bool,
 }
 
 impl std::fmt::Debug for UnindexedQueryMiddleware {
@@ -160,7 +163,21 @@ impl UnindexedQueryMiddleware {
             whitelist,
             relay_pubkey,
             admin_pubkeys: Arc::new(admin_pubkeys),
+            public_read: false,
         }
+    }
+
+    /// Match the processor's `with_public_read`.
+    pub fn with_public_read(mut self, public_read: bool) -> Self {
+        self.public_read = public_read;
+        self
+    }
+
+    /// Whether this REQ will actually run, and so must be charged. On a
+    /// public-read relay every reader's scan runs, admitted or not; billing
+    /// only admitted ones would hand anonymous connections an unlimited budget.
+    fn will_run(&self, pubkey: Option<&PublicKey>) -> bool {
+        self.public_read || self.admits(pubkey)
     }
 
     fn admits(&self, pubkey: Option<&PublicKey>) -> bool {
@@ -215,7 +232,7 @@ impl NostrMiddleware<()> for UnindexedQueryMiddleware {
             crate::metrics::unindexed_queries().increment(offenders.len() as u64);
 
             let authed_pubkey = ctx.state.read().await.authed_pubkey;
-            if !self.admits(authed_pubkey.as_ref()) {
+            if !self.will_run(authed_pubkey.as_ref()) {
                 // Admission will refuse this REQ; do not bill for it.
                 return ctx.next().await;
             }
@@ -413,5 +430,24 @@ mod tests {
 
         // An open relay admits everyone, authenticated or not.
         assert!(open_relay_mw().admits(None));
+    }
+
+    #[test]
+    fn a_public_read_relay_charges_anonymous_scans() {
+        let member = Keys::generate().public_key();
+        let closed = UnindexedQueryMiddleware::new(
+            Whitelist::new(vec![member], None, Blacklist::new(None)),
+            Keys::generate().public_key(),
+            vec![],
+        );
+        // Closed: an anonymous scan will be refused, so it is not charged.
+        assert!(!closed.will_run(None));
+
+        let public_read = closed.with_public_read(true);
+        // Public read: it runs, so it must be charged, or anonymous
+        // connections would scan for free.
+        assert!(public_read.will_run(None));
+        assert!(public_read.will_run(Some(&Keys::generate().public_key())));
+        assert!(public_read.will_run(Some(&member)));
     }
 }

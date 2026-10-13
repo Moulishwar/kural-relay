@@ -51,6 +51,12 @@ const KIND_VOICE_SIGNAL_25050: u16 = 25050;
 /// before Kural After-MVP #9.
 const KIND_GIFT_WRAP_1059: u16 = 1059;
 
+/// Marmot (MLS over Nostr) group traffic. Encrypted, signed by a fresh key per
+/// message, and tagged with an `h` the relay does not manage, so to the NIP-29
+/// rules it is an ordinary unmanaged-group event that anyone could read. On a
+/// public-read relay it stays reserved for admitted readers (see `public_read`).
+const KIND_MARMOT_GROUP_445: u16 = 445;
+
 /// Per-pubkey token-bucket rate limiter. Keyed by pubkey hex; spammers reconnecting
 /// or rotating connections still hit the same bucket as long as they sign with the same key.
 pub type PubkeyLimiter = DefaultKeyedRateLimiter<PublicKey>;
@@ -95,6 +101,8 @@ pub struct GroupsRelayProcessor {
     /// Optional optimized Obelisk read index. Normal relay behavior does not
     /// depend on this; it is updated only after events pass relay validation.
     obelisk_index: Option<Arc<ObeliskIndex>>,
+    /// Anyone may read; only admitted pubkeys may write. See `with_public_read`.
+    public_read: bool,
 }
 
 impl std::fmt::Debug for GroupsRelayProcessor {
@@ -105,6 +113,7 @@ impl std::fmt::Debug for GroupsRelayProcessor {
             .field("whitelist_empty", &self.whitelist.is_empty())
             .field("pubkey_limiter", &self.pubkey_limiter.is_some())
             .field("obelisk_index", &self.obelisk_index.is_some())
+            .field("public_read", &self.public_read)
             .finish()
     }
 }
@@ -132,7 +141,24 @@ impl GroupsRelayProcessor {
             report_evidence: None,
             config_dir: None,
             obelisk_index: None,
+            public_read: false,
         }
+    }
+
+    /// Let anyone read while keeping writes to admitted pubkeys.
+    ///
+    /// The whitelist normally gates reads and writes alike, which makes every
+    /// public group on a closed relay invisible to anyone not on the list --
+    /// including people who only want to read it. With this on, a reader who
+    /// is not admitted is treated like any reader of an open relay, with three
+    /// exceptions that stay closed whatever the filter: private-group traffic
+    /// (kind 445) needs an admitted login, gift wraps (1059) go only to their
+    /// recipient, and moderation reports (1984) only to relay admins. NIP-29
+    /// rules are unchanged, so a group flagged `private` stays members-only.
+    /// Publishing is untouched: `handle_event` keeps the full admission check.
+    pub fn with_public_read(mut self, public_read: bool) -> Self {
+        self.public_read = public_read;
+        self
     }
 
     /// Attach per-pubkey rate limiters, one bucket per access tier.
@@ -380,9 +406,35 @@ impl EventProcessor for GroupsRelayProcessor {
 
         // Enforce pubkey whitelist
         if !signer_handshake && !self.is_allowed(&context.authed_pubkey) {
-            return Err(relay_builder::Error::auth_required(
-                "Authentication required: this relay only accepts whitelisted pubkeys".to_string(),
-            ));
+            if !self.public_read {
+                return Err(relay_builder::Error::auth_required(
+                    "Authentication required: this relay only accepts whitelisted pubkeys"
+                        .to_string(),
+                ));
+            }
+
+            // Public read: everything a non-admitted reader may see is decided
+            // per event in `can_see_event`. Private-group traffic is refused up
+            // front when asked for by name, so a client learns it has to log
+            // in rather than concluding the group is empty.
+            let asks_for_private_traffic = filters.iter().any(|f| {
+                f.kinds
+                    .as_ref()
+                    .is_some_and(|kinds| kinds.iter().any(|k| k.as_u16() == KIND_MARMOT_GROUP_445))
+            });
+            if asks_for_private_traffic {
+                if context.authed_pubkey.is_none() {
+                    return Err(relay_builder::Error::auth_required(
+                        "Authentication required: private group traffic is only served to \
+                         whitelisted pubkeys"
+                            .to_string(),
+                    ));
+                }
+                return Err(relay_builder::Error::restricted(
+                    "Access denied: private group traffic is only served to whitelisted pubkeys"
+                        .to_string(),
+                ));
+            }
         }
 
         // For groups relay, we need to verify access to group queries
@@ -474,6 +526,18 @@ impl EventProcessor for GroupsRelayProcessor {
                     || self.is_relay_admin(viewer)
                     || recipients.any(|pk| pk == viewer));
             }
+        }
+
+        // On a public-read relay, readers who are not admitted never receive
+        // private-group traffic or gift wraps, whatever filter they used.
+        if self.public_read
+            && matches!(
+                event.kind.as_u16(),
+                KIND_MARMOT_GROUP_445 | KIND_GIFT_WRAP_1059
+            )
+            && !self.is_allowed(&context.authed_pubkey)
+        {
+            return Ok(false);
         }
 
         // Only the p-tagged, authenticated recipient may see a gift wrap. This

@@ -150,6 +150,7 @@ async fn async_main() -> Result<()> {
         connection_rate_limit_per_minute: relay_settings.connection_rate_limit_per_minute,
         global_rate_limit_per_minute: relay_settings.global_rate_limit_per_minute,
         force_public_groups: relay_settings.force_public_groups,
+        public_read: relay_settings.public_read,
         enable_indexed_search: relay_settings.enable_indexed_search,
         advertise_indexed_search: relay_settings.advertise_indexed_search,
         obelisk_index: relay_settings.obelisk_index.clone(),
