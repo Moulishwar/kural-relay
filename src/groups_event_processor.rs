@@ -39,6 +39,18 @@ const KIND_NIP46_SIGNER: u16 = 24133;
 /// `{kinds:[25050]}` could harvest the addresses of everyone in a voice call.
 const KIND_VOICE_SIGNAL_25050: u16 = 25050;
 
+/// NIP-59 gift wrap (private invitations, DMs, follow requests).
+///
+/// Kural patch (a) — NIP-17/NIP-59: "relays SHOULD only serve kind:1059 to the
+/// p-tagged recipient". Each wrap names its recipient in the clear, so serving
+/// it to anyone else tells them who received a private message or invite, and
+/// when. Served only to an authenticated recipient; a REQ that names the kind
+/// without authenticating is told to AUTH rather than silently given nothing.
+///
+/// Breaks Concord-style rooms that read 1059 by author (Kural P-27); revisit
+/// before Kural After-MVP #9.
+const KIND_GIFT_WRAP_1059: u16 = 1059;
+
 /// Per-pubkey token-bucket rate limiter. Keyed by pubkey hex; spammers reconnecting
 /// or rotating connections still hit the same bucket as long as they sign with the same key.
 pub type PubkeyLimiter = DefaultKeyedRateLimiter<PublicKey>;
@@ -349,6 +361,23 @@ impl EventProcessor for GroupsRelayProcessor {
                     .is_some_and(|kinds| kinds.iter().all(|k| k.as_u16() == KIND_NIP46_SIGNER))
             });
 
+        // Gift wraps are only ever served to their authenticated recipient (see
+        // KIND_GIFT_WRAP_1059), so asking for them anonymously can never return
+        // anything. Say so, rather than answer with an empty result that reads
+        // as "you have no invitations".
+        if context.authed_pubkey.is_none()
+            && filters.iter().any(|f| {
+                f.kinds
+                    .as_ref()
+                    .is_some_and(|kinds| kinds.iter().any(|k| k.as_u16() == KIND_GIFT_WRAP_1059))
+            })
+        {
+            return Err(relay_builder::Error::auth_required(
+                "Authentication required: gift wraps are only served to their recipient"
+                    .to_string(),
+            ));
+        }
+
         // Enforce pubkey whitelist
         if !signer_handshake && !self.is_allowed(&context.authed_pubkey) {
             return Err(relay_builder::Error::auth_required(
@@ -445,6 +474,17 @@ impl EventProcessor for GroupsRelayProcessor {
                     || self.is_relay_admin(viewer)
                     || recipients.any(|pk| pk == viewer));
             }
+        }
+
+        // Only the p-tagged, authenticated recipient may see a gift wrap. This
+        // runs for every delivery path -- stored results and live broadcasts --
+        // so a filter that never names the kind (`#p`-only, `authors`, `ids`)
+        // cannot reach one either.
+        if event.kind.as_u16() == KIND_GIFT_WRAP_1059 {
+            let Some(viewer) = context.authed_pubkey.as_ref() else {
+                return Ok(false);
+            };
+            return Ok(event.tags.public_keys().any(|pk| pk == viewer));
         }
 
         // Check if this is a group event
