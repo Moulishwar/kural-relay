@@ -12,6 +12,7 @@ use crate::{
     groups_event_processor::GroupsRelayProcessor,
     handler, metrics,
     metrics_handler::PrometheusSubscriptionMetricsHandler,
+    negentropy_gate::NegentropyGate,
     obelisk_api,
     obelisk_api::ObeliskHttpLimiter,
     obelisk_index::ObeliskIndex,
@@ -619,6 +620,9 @@ pub async fn run_server(
         relay_keys.public_key,
         admin_pubkeys.clone(),
     );
+    // NIP-77 reconciliation reads straight from the database, past every
+    // visibility rule; see `crate::negentropy_gate`.
+    let negentropy_gate = NegentropyGate::new(relay_keys.public_key, admin_pubkeys.clone());
 
     // Build the local follow graph, then keep it fresh. Done off the startup
     // path because it fetches contact lists: the relay must come up and serve
@@ -698,6 +702,7 @@ pub async fn run_server(
             .build_with(|chain| {
                 chain
                     .with(wot_admission)
+                    .with(negentropy_gate)
                     .with(group_state_filter)
                     .with(unindexed_query)
                     .with(search_capability)

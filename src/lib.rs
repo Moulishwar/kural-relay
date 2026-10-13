@@ -16,6 +16,7 @@ pub mod groups_event_processor;
 pub mod handler;
 pub mod metrics;
 pub mod metrics_handler;
+pub mod negentropy_gate;
 pub mod obelisk_api;
 pub mod obelisk_index;
 pub mod pruner;
