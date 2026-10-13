@@ -5,7 +5,8 @@ on:
   # listing "*" here meant a push to a branch with an open PR ran the whole
   # suite twice — once for each event.
   push:
-    branches: [ main ]
+    # Kural fork: `kural` carries the Kural patches on top of upstream main.
+    branches: [ main, kural ]
     paths-ignore: &non_code
       - '**.md'
       - 'docs/**'
