@@ -169,3 +169,38 @@ async fn a5_a_wrap_to_several_recipients_reaches_each_of_them() {
     assert!(f.sees(Some(&f.meera), &wrap));
     assert!(!f.sees(Some(&f.outsider), &wrap));
 }
+
+// ---------------------------------------------------------------- reports (1984)
+
+/// A NIP-56 report against `target`, filed by `reporter`.
+fn report_against(target: &Keys, reporter: &Keys) -> Event {
+    EventBuilder::new(Kind::Reporting, "spam")
+        .tag(Tag::public_key(target.public_key()))
+        .sign_with_keys(reporter)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn r1_a_reported_guest_cannot_find_reports_by_asking_for_everything_about_them() {
+    let f = Fixture::new().await;
+    let report = report_against(&f.ravi, &f.meera);
+    // `#p`-only: never names kind 1984, so the REQ-level check does not fire...
+    assert!(f
+        .verify(
+            Some(&f.ravi),
+            vec![Filter::new().pubkey(f.ravi.public_key())]
+        )
+        .is_ok());
+    // ...but the report itself is withheld, so the reporter stays unknown.
+    assert!(!f.sees(Some(&f.ravi), &report));
+    assert!(!f.sees(Some(&f.meera), &report), "not even its author");
+    assert!(!f.sees(Some(&f.outsider), &report));
+    assert!(!f.sees(None, &report));
+}
+
+#[tokio::test]
+async fn r2_relay_admins_still_see_reports() {
+    let f = Fixture::new().await;
+    let report = report_against(&f.ravi, &f.meera);
+    assert!(f.sees(Some(&f.relay), &report));
+}

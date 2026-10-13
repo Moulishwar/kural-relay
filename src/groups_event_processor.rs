@@ -487,6 +487,19 @@ impl EventProcessor for GroupsRelayProcessor {
             return Ok(event.tags.public_keys().any(|pk| pk == viewer));
         }
 
+        // Moderation reports are for relay admins only, however they are asked
+        // for. `verify_filters` refuses a REQ that names kind 1984, but a filter
+        // that never names it -- `{"#p":[<me>]}`, `{"authors":[...]}`, `{}` --
+        // would still return the reports filed against someone, and with them
+        // who filed them. That is the retaliation channel the REQ check exists
+        // to close, so close it here too, on every delivery path.
+        if event.kind == crate::reports::KIND_REPORT_1984 {
+            return Ok(context
+                .authed_pubkey
+                .as_ref()
+                .is_some_and(|pk| self.is_relay_admin(pk)));
+        }
+
         // Check if this is a group event
         if let Some(group_ref) = self.groups.find_group_from_event(event, &context.subdomain) {
             // Group event - check access control using the group's can_see_event method
