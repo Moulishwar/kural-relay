@@ -54,7 +54,7 @@ async fn test_join_request_generates_correct_events() {
     println!("Group creation returned {} commands", commands.len());
 
     // Create invite
-    let invite_code = "TESTINVITE123";
+    let invite_code = "TESTINVITE123456"; // codes must be at least 16 characters
     let invite_event = EventBuilder::new(KIND_GROUP_CREATE_INVITE_9009, "")
         .tags(vec![
             Tag::custom(TagKind::h(), [group_id]),
