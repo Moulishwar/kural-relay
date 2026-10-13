@@ -80,6 +80,10 @@ pub struct RelaySettings {
     /// Either an `https://` URL or a small `data:image/...;base64,` URI.
     #[serde(default)]
     pub relay_icon: Option<String>,
+    /// Optional NIP-11 `contact` (an npub, `mailto:` or URL) for whoever runs
+    /// this instance. Defaults to the Obelisk operator's npub.
+    #[serde(default)]
+    pub relay_contact: Option<String>,
     /// If set, events of `prune_kinds` older than this duration can be deleted by
     /// a background task, but only when `enable_event_pruner` is explicitly true.
     /// Retention config alone is kept as inert policy metadata to prevent accidental
@@ -573,6 +577,7 @@ pub struct Settings {
     pub relay_name: Option<String>,
     pub relay_description: Option<String>,
     pub relay_icon: Option<String>,
+    pub relay_contact: Option<String>,
     pub event_retention: Option<Duration>,
     pub enable_event_pruner: bool,
     pub prune_interval: Option<Duration>,

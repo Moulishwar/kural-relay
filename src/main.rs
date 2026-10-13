@@ -141,6 +141,7 @@ async fn async_main() -> Result<()> {
         relay_name: relay_settings.relay_name.clone(),
         relay_description: relay_settings.relay_description.clone(),
         relay_icon: relay_settings.relay_icon.clone(),
+        relay_contact: relay_settings.relay_contact.clone(),
         event_retention: relay_settings.event_retention,
         enable_event_pruner: relay_settings.enable_event_pruner,
         prune_interval: relay_settings.prune_interval,

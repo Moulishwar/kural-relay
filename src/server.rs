@@ -554,6 +554,16 @@ pub async fn run_server(
         }
     });
     let relay_icon = settings.relay_icon.clone().filter(|s| !s.trim().is_empty());
+    // Every instance used to advertise the Obelisk operator as its contact,
+    // which sends people with a complaint about someone else's relay to the
+    // wrong person. Kept as the default so existing deployments are unchanged.
+    let relay_contact = settings
+        .relay_contact
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            "npub1m9vsm9d8sy0pevcjhenwm4ny6l37dm2hsg4dnusna43ql3n5305qy4zlg4".to_string()
+        });
     let supported_nips =
         configured_supported_nips(advertise_indexed_search, settings.obelisk_index.enabled);
 
@@ -561,7 +571,7 @@ pub async fn run_server(
         name: relay_name.clone(),
         description: relay_description.clone(),
         pubkey: relay_keys.public_key.to_string(),
-        contact: "npub1m9vsm9d8sy0pevcjhenwm4ny6l37dm2hsg4dnusna43ql3n5305qy4zlg4".to_string(),
+        contact: relay_contact,
         supported_nips: supported_nips.clone(),
         software: "groups_relay".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
